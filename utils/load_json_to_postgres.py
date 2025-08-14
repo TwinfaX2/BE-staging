@@ -48,6 +48,8 @@ def create_tables(conn):
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS documents (
                 document_id SERIAL PRIMARY KEY,
+                serial_number VARCHAR(128),
+                title_number VARCHAR(255),
                 execution_date DATE,
                 timestamp TIMESTAMP
             );
@@ -165,6 +167,43 @@ def create_tables(conn):
                 task_treemap JSONB
             );
         """)
+        # ----- progress_snapshots -----
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS progress_snapshots (
+                snapshot_id SERIAL PRIMARY KEY,
+                serial_number VARCHAR(128) NOT NULL,
+                title_number VARCHAR(255),
+                progress_hash VARCHAR(64) NOT NULL,
+                snapshot_data JSONB NOT NULL,
+                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT uq_progress_snapshot UNIQUE (serial_number, title_number)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_progress_snapshots_sn ON progress_snapshots (serial_number);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_progress_snapshots_hash ON progress_snapshots (progress_hash);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_progress_snapshots_updated ON progress_snapshots (last_updated);")
+        
+        # ----- processing_log -----
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS processing_log (
+                log_id SERIAL PRIMARY KEY,
+                execution_id VARCHAR(64) NOT NULL,
+                serial_number VARCHAR(128),
+                title_number VARCHAR(255),
+                action VARCHAR(50) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                message TEXT,
+                progress_before JSONB,
+                progress_after JSONB,
+                processing_time_ms INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_processing_log_execution_id ON processing_log (execution_id);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_processing_log_sn ON processing_log (serial_number);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_processing_log_status ON processing_log (status);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_processing_log_created_at ON processing_log (created_at);")
+        
         conn.commit() 
         logger.info("✅ All application tables checked/created successfully.")
     except psycopg2.Error as e:
@@ -278,7 +317,7 @@ def insert_info(conn, document_id, info_data_list):
                 product_code, title_number, spreadsheet_link
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (document_id, serial_number)
+            ON CONFLICT (document_id, serial_number) 
             DO UPDATE SET
                 model_name = EXCLUDED.model_name,
                 mech_partner = EXCLUDED.mech_partner,
@@ -298,7 +337,7 @@ def insert_info(conn, document_id, info_data_list):
                 spreadsheet_link = EXCLUDED.spreadsheet_link
         """
         cursor.executemany(sql_upsert_info, values_to_insert)
-        logger.info(f"Prepared to upsert {len(values_to_insert)} info record(s) for document_id={document_id}")
+        logger.info(f"Prepared to insert {len(values_to_insert)} info record(s) for document_id={document_id}")
     except psycopg2.Error as e:
         logger.error(f"Database error preparing info insert for document_id={document_id}: {str(e)}", exc_info=True)
         raise
@@ -727,7 +766,8 @@ def load_json_to_db(json_file_path, LIMIT):
         conn = connect_to_db()
         create_tables(conn)
 
-        documents_to_process = data['documents'][:LIMIT]
+        # LIMIT 제거 - 모든 문서 처리
+        documents_to_process = data['documents'] if LIMIT is None else data['documents'][:LIMIT]
         num_documents_to_process = len(documents_to_process)
         logger.info(f"📊 처리 대상 문서: {num_documents_to_process}개")
 
@@ -758,15 +798,20 @@ def load_json_to_db(json_file_path, LIMIT):
 
         # BATCH_SIZE와 TOLERANCE 설정
         BATCH_SIZE = int(os.getenv('BATCH_SIZE', 10))
-        TOLERANCE = float(os.getenv('TOLERANCE', 0.1))
+        tolerance_str = os.getenv('TOLERANCE', '0.1').strip()
+        TOLERANCE = float(tolerance_str) if tolerance_str else 0.1
         
         # Progress 변동 감지 시스템을 사용한 안전한 배치 처리
+        logger.info(f"🔧 DEBUG: SafeBatchProcessor 생성 중...")
         batch_processor = SafeBatchProcessor(conn, batch_size=BATCH_SIZE, tolerance=TOLERANCE)
+        logger.info(f"🔧 DEBUG: SafeBatchProcessor 생성 완료")
         
         logger.info(f"⚙️  배치 설정: BATCH_SIZE={BATCH_SIZE}, TOLERANCE={TOLERANCE}")
         
         # 배치 처리 실행
+        logger.info(f"🔧 DEBUG: batch_processor.process_data_batch 호출 중...")
         result = batch_processor.process_data_batch(extracted_data)
+        logger.info(f"🔧 DEBUG: batch_processor.process_data_batch 완료")
         
         # 결과 로깅
         if result['success']:
