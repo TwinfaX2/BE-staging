@@ -6,12 +6,12 @@ on:
       target_month:
         description: '추출할 월 (예: 2025-08)'
         required: false
-        default: '2025-08'
+        default: '2025-07'
         type: string
       limit:
         description: '처리할 파일 개수 제한 (테스트용)'
         required: false
-        default: '10'
+        default: '5'
         type: string
 
 jobs:
@@ -43,7 +43,7 @@ jobs:
         GOOGLE_DRIVE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS_JSON }}
         SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
         DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
-        EXTRACT_TARGET_MONTH: ${{ github.event.inputs.target_month || '2025-08' }}
+        EXTRACT_TARGET_MONTH: ${{ github.event.inputs.target_month || '2025-07' }}
         EXTRACTION_BATCH_SIZE: ${{ secrets.EXTRACTION_BATCH_SIZE }}
         EXTRACTION_BATCH_DELAY: ${{ secrets.EXTRACTION_BATCH_DELAY }}
         LIMIT: ${{ github.event.inputs.limit || secrets.LIMIT }}
