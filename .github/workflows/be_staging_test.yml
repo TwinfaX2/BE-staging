@@ -1,0 +1,66 @@
+name: 🧪 BE-Staging Data Pipeline Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_month:
+        description: '추출할 월 (예: 2025-08)'
+        required: false
+        default: '2025-08'
+        type: string
+      limit:
+        description: '처리할 파일 개수 제한 (테스트용)'
+        required: false
+        default: '10'
+        type: string
+
+jobs:
+  extract_and_load:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: 📥 Checkout repository
+      uses: actions/checkout@v4
+      
+    - name: �� Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.12'
+        
+    - name: 📦 Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: 🎯 Data Extraction & DB Loading
+      env:
+        DB_HOST: ${{ secrets.DB_HOST }}
+        DB_PORT: ${{ secrets.DB_PORT }}
+        DB_USER: ${{ secrets.DB_USER }}
+        DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+        DB_NAME: ${{ secrets.DB_NAME }}
+        GOOGLE_SHEETS_CREDENTIALS_JSON: ${{ secrets.GOOGLE_SHEETS_CREDENTIALS_JSON }}
+        GOOGLE_DRIVE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_DRIVE_CREDENTIALS_JSON }}
+        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        EXTRACT_TARGET_MONTH: ${{ github.event.inputs.target_month || '2025-08' }}
+        EXTRACTION_BATCH_SIZE: ${{ secrets.EXTRACTION_BATCH_SIZE }}
+        EXTRACTION_BATCH_DELAY: ${{ secrets.EXTRACTION_BATCH_DELAY }}
+        LIMIT: ${{ github.event.inputs.limit || secrets.LIMIT }}
+        TOLERANCE: ${{ secrets.TOLERANCE }}
+        RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
+      run: |
+        echo "🚀 Starting BE-Staging Pipeline Test"
+        echo "🗓️ Target Month: $EXTRACT_TARGET_MONTH"
+        echo "🔢 Limit: $LIMIT"
+        
+        echo "📥 Step 1: Data Extraction"
+        python main_extract.py --output output/github_actions_test.json
+        
+        echo "📊 Step 2: Database Loading"
+        python main_push_db/main.py
+        
+        echo "📋 Step 3: Summary"
+        echo "📂 Generated JSON files:"
+        ls -la output/*.json || echo "No JSON files found"
+        echo "✅ Pipeline test completed successfully!"
