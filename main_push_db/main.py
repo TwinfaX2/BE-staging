@@ -176,12 +176,9 @@ def delete_existing_data(conn, serial_number, title_number=None):
 
 def main():
     logger.info("main_push_db.py: Main process started.")
-    try:
-        LIMIT = int(sys.argv[1]) if len(sys.argv) > 1 else 1
-        logger.info(f"Processing LIMIT set to: {LIMIT}")
-    except (IndexError, ValueError):
-        logger.warning(f"Invalid or missing LIMIT argument. Defaulting to 1.")
-        LIMIT = 1
+    # LIMIT 완전 제거 - 모든 데이터 처리
+    LIMIT = None
+    logger.info(f"🔧 LIMIT 제거 완료: {LIMIT} (모든 데이터 처리)")
 
     logger.info(
         f"Database settings: User=****, Host={DB_HOST}, Port={DB_PORT}, DBName={DB_NAME}"
@@ -197,26 +194,6 @@ def main():
         )
         return
 
-    try:
-        json_files = [
-            f
-            for f in os.listdir(output_dir)
-            if f.endswith(".json") and os.path.isfile(os.path.join(output_dir, f))
-        ]
-    except OSError as e:
-        logger.error(
-            f"Error listing files in output directory '{output_dir}': {e}",
-            exc_info=True,
-        )
-        return
-
-    if not json_files:
-        logger.warning(
-            f"No JSON files found in output directory '{output_dir}'. Nothing to process."
-        )
-        return
-    logger.info(f"Found {len(json_files)} JSON file(s) to process: {json_files}")
-
     conn = None
     successfully_processed_files_this_run = []
 
@@ -230,9 +207,42 @@ def main():
             f"Files previously marked as processed in DB: {db_already_processed_files}"
         )
 
+        # 🔄 Railway/Staging 환경에서는 processed_files 테이블 기준으로 처리
+        if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("DB_HOST") == "switchyard.proxy.rlwy.net":
+            # 클라우드 환경: DB 테이블 기준
+            json_files = db_already_processed_files
+            logger.info(f"🌐 클라우드 환경: processed_files 테이블 기준으로 {len(json_files)}개 파일 처리")
+        else:
+            # 로컬 환경: 파일시스템 기준
+            try:
+                json_files = [
+                    f
+                    for f in os.listdir(output_dir)
+                    if f.endswith(".json") and os.path.isfile(os.path.join(output_dir, f))
+                ]
+                logger.info(f"💻 로컬 환경: 파일시스템 기준으로 {len(json_files)}개 파일 발견")
+            except OSError as e:
+                logger.error(
+                    f"Error listing files in output directory '{output_dir}': {e}",
+                    exc_info=True,
+                )
+                return
+
+        if not json_files:
+            logger.warning("처리할 JSON 파일이 없습니다.")
+            return
+        
+        logger.info(f"📋 최종 처리 대상: {json_files}")
+
         for json_file_name in json_files:
             full_json_file_path = os.path.join(output_dir, json_file_name)
             logger.info(f"--- Starting processing for file: {json_file_name} ---")
+
+            # 클라우드 환경에서는 파일 존재 여부 확인
+            if os.getenv("RAILWAY_ENVIRONMENT") or os.getenv("DB_HOST") == "switchyard.proxy.rlwy.net":
+                if not os.path.exists(full_json_file_path):
+                    logger.warning(f"🌐 클라우드 환경: 파일 '{json_file_name}'이 존재하지 않습니다. 건너뜁니다.")
+                    continue
 
             if json_file_name in db_already_processed_files:
                 logger.info(
@@ -252,25 +262,10 @@ def main():
                     )
                     continue
 
-                unique_sn_title_to_delete = set()
-                for doc_entry in documents_in_file:
-                    infos = doc_entry.get("info", [])
-                    if infos and isinstance(infos, list) and isinstance(infos[0], dict):
-                        sn = infos[0].get("S/N")
-                        tn = infos[0].get("title number")
-                        if sn:
-                            unique_sn_title_to_delete.add((sn, tn))
-
+                # Progress Change Detection 시스템이 변동 감지를 담당하므로 사전 삭제 로직 제거
                 logger.info(
-                    f"Found {len(unique_sn_title_to_delete)} unique S/N (and Title) combinations in '{json_file_name}' to attempt pre-deletion for."
+                    f"Found {len(documents_in_file)} documents in '{json_file_name}'. Progress Change Detection 시스템이 변동 감지를 수행합니다."
                 )
-                for sn_to_delete, tn_to_delete in unique_sn_title_to_delete:
-                    try:
-                        delete_existing_data(conn, sn_to_delete, tn_to_delete)
-                    except Exception:
-                        logger.error(
-                            f"Pre-deletion failed for S/N='{sn_to_delete}' from file '{json_file_name}'. Will proceed with load attempt."
-                        )
 
                 logger.info(
                     f"Calling load_json_to_db for file '{json_file_name}' (LIMIT={LIMIT} will be applied inside)."

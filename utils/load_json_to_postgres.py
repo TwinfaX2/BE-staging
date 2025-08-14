@@ -7,6 +7,9 @@ import time
 from datetime import datetime
 from config.settings import DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME
 
+# Progress 변동 감지 시스템 import
+from .safe_batch_processor import SafeBatchProcessor
+
 # 로깅 설정
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)  # DEBUG 레벨로 설정
@@ -267,7 +270,7 @@ def insert_info(conn, document_id, info_data_list):
             logger.warning(f"No valid info items to insert for document_id={document_id} after processing list.")
             return
 
-        sql_insert_info = """
+        sql_upsert_info = """
             INSERT INTO info (
                 document_id, serial_number, model_name, mech_partner, elec_partner,
                 customer, sales_order, line, quantity, manufacturing_start,
@@ -275,9 +278,27 @@ def insert_info(conn, document_id, info_data_list):
                 product_code, title_number, spreadsheet_link
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (document_id, serial_number)
+            DO UPDATE SET
+                model_name = EXCLUDED.model_name,
+                mech_partner = EXCLUDED.mech_partner,
+                elec_partner = EXCLUDED.elec_partner,
+                customer = EXCLUDED.customer,
+                sales_order = EXCLUDED.sales_order,
+                line = EXCLUDED.line,
+                quantity = EXCLUDED.quantity,
+                manufacturing_start = EXCLUDED.manufacturing_start,
+                manufacturing_end = EXCLUDED.manufacturing_end,
+                test_start = EXCLUDED.test_start,
+                test_end = EXCLUDED.test_end,
+                semi_product_start = EXCLUDED.semi_product_start,
+                module_outsourcing = EXCLUDED.module_outsourcing,
+                product_code = EXCLUDED.product_code,
+                title_number = EXCLUDED.title_number,
+                spreadsheet_link = EXCLUDED.spreadsheet_link
         """
-        cursor.executemany(sql_insert_info, values_to_insert)
-        logger.info(f"Prepared to insert {len(values_to_insert)} info record(s) for document_id={document_id}")
+        cursor.executemany(sql_upsert_info, values_to_insert)
+        logger.info(f"Prepared to upsert {len(values_to_insert)} info record(s) for document_id={document_id}")
     except psycopg2.Error as e:
         logger.error(f"Database error preparing info insert for document_id={document_id}: {str(e)}", exc_info=True)
         raise
@@ -667,8 +688,12 @@ def verify_data(conn, document_id):
         if cursor: cursor.close()
 
 def load_json_to_db(json_file_path, LIMIT):
+    """
+    Progress 변동 감지 시스템을 사용한 효율적인 JSON 데이터 적재
+    변동된 S/N만 처리하여 성능을 향상시키고 안정성을 보장
+    """
     start_total = time.time()
-    logger.info(f"Starting load_json_to_db for file: {json_file_path}, LIMIT: {LIMIT}")
+    logger.info(f"🚀 Progress 변동 감지 시스템으로 데이터 적재 시작: '{json_file_path}' (LIMIT={LIMIT})")
 
     if not os.path.exists(json_file_path):
         logger.error(f"File {json_file_path} does not exist.")
@@ -704,69 +729,83 @@ def load_json_to_db(json_file_path, LIMIT):
 
         documents_to_process = data['documents'][:LIMIT]
         num_documents_to_process = len(documents_to_process)
-        logger.info(f"Preparing to process {num_documents_to_process} documents based on LIMIT={LIMIT}.")
+        logger.info(f"📊 처리 대상 문서: {num_documents_to_process}개")
 
-        BATCH_SIZE = int(os.getenv('BATCH_SIZE', 1))
-        logger.info(f"Using BATCH_SIZE={BATCH_SIZE}")
-        total_batches = (num_documents_to_process + BATCH_SIZE - 1) // BATCH_SIZE if BATCH_SIZE > 0 else (1 if num_documents_to_process > 0 else 0)
+        # JSON 데이터를 S/N별로 재구성
+        extracted_data = {}
+        for document_data in documents_to_process:
+            if not isinstance(document_data, dict):
+                logger.warning(f"⚠️  문서 데이터가 dict가 아님. 스킵.")
+                continue
+                
+            # S/N 추출
+            doc_info_list = document_data.get('info', [])
+            if doc_info_list and isinstance(doc_info_list, list) and len(doc_info_list) > 0:
+                serial_number = doc_info_list[0].get('S/N')
+                title_number = doc_info_list[0].get('title number')
+                
+                if serial_number:
+                    # 문서 데이터에 S/N과 title_number 추가
+                    document_data['serial_number'] = serial_number
+                    document_data['title_number'] = title_number
+                    document_data['timestamp'] = data.get('timestamp')
+                    
+                    extracted_data[serial_number] = document_data
+                else:
+                    logger.warning(f"⚠️  S/N이 없는 문서 스킵")
 
-        for i in range(0, num_documents_to_process, BATCH_SIZE):
-            current_batch_number = (i // BATCH_SIZE) + 1
-            batch_documents = documents_to_process[i:i + BATCH_SIZE]
-            num_in_batch = len(batch_documents)
+        logger.info(f"📋 S/N별 데이터 재구성 완료: {len(extracted_data)}개")
+
+        # BATCH_SIZE와 TOLERANCE 설정
+        BATCH_SIZE = int(os.getenv('BATCH_SIZE', 10))
+        TOLERANCE = float(os.getenv('TOLERANCE', 0.1))
+        
+        # Progress 변동 감지 시스템을 사용한 안전한 배치 처리
+        batch_processor = SafeBatchProcessor(conn, batch_size=BATCH_SIZE, tolerance=TOLERANCE)
+        
+        logger.info(f"⚙️  배치 설정: BATCH_SIZE={BATCH_SIZE}, TOLERANCE={TOLERANCE}")
+        
+        # 배치 처리 실행
+        result = batch_processor.process_data_batch(extracted_data)
+        
+        # 결과 로깅
+        if result['success']:
+            logger.info(f"✅ Progress 변동 감지 배치 처리 완료!")
+            logger.info(f"   📊 처리 결과:")
+            logger.info(f"   - 전체 S/N: {result['total_processed']}개")
+            logger.info(f"   - 변동 감지: {result['total_changed']}개")
+            logger.info(f"   - 건너뜀: {result['total_skipped']}개") 
+            logger.info(f"   - 성공: {result['success_count']}개")
+            logger.info(f"   - 실패: {result['failed_count']}개")
+            logger.info(f"   - 처리 시간: {result['processing_time_ms']}ms")
             
-            logger.info(f"Starting batch {current_batch_number}/{total_batches} with {num_in_batch} documents.")
-            start_batch_time = time.time()
+            if result['failed_serials']:
+                logger.warning(f"   ⚠️  실패한 S/N: {result['failed_serials']}")
+                
+            # 효율성 통계
+            efficiency = (result['total_skipped'] / max(result['total_processed'], 1)) * 100
+            logger.info(f"   🎯 처리 효율성: {efficiency:.1f}% (건너뜀 비율)")
+            
+        else:
+            logger.error(f"❌ Progress 변동 감지 배치 처리 실패: {result.get('error', 'Unknown error')}")
+            raise Exception(f"Batch processing failed: {result.get('error', 'Unknown error')}")
 
-            try:
-                for doc_idx, document_data in enumerate(batch_documents):
-                    if not isinstance(document_data, dict):
-                        logger.error(f"❌ Document item at index {i+doc_idx} is not a dict. Type: {type(document_data)}. Skipping.")
-                        continue 
-                    
-                    current_sn_for_log = "UNKNOWN_SN"
-                    doc_info_list = document_data.get('info')
-                    if doc_info_list and isinstance(doc_info_list, list) and len(doc_info_list) > 0 and isinstance(doc_info_list[0], dict):
-                        current_sn_for_log = doc_info_list[0].get('S/N', 'UNKNOWN_SN')
-
-                    logger.info(f"  Processing document {doc_idx+1}/{num_in_batch} in batch {current_batch_number} (S/N: {current_sn_for_log}).")
-                    
-                    document_id = insert_document(conn, document_data, data['timestamp'])
-                    
-                    insert_info(conn, document_id, document_data.get('info', []))
-                    insert_worksheet(conn, document_id, document_data.get('worksheet', []))
-                    insert_task_summary(conn, document_id, document_data.get('task_summary', []), document_data.get('info', []))
-                    insert_ot_details(conn, document_id, document_data.get('ot_details', []))
-                    insert_progress_summary(conn, document_id, document_data.get('progress_summary', {}))
-                    insert_stats(conn, document_id, document_data.get('stats', {}))
-                    insert_partner_stats(conn, document_id, document_data.get('partner_stats', {}))
-                    insert_additional_info(conn, document_id, document_data.get('additional_info', {}))
-                    insert_treemap_data(conn, document_id, document_data.get('treemap_data', {}))
-                    
-                    verify_data(conn, document_id)
-                    logger.info(f"  Successfully processed document {doc_idx+1}/{num_in_batch} (S/N: {current_sn_for_log}, DocID: {document_id}).")
-
-                conn.commit()
-                logger.info(f"Batch {current_batch_number}/{total_batches} committed successfully. Time: {time.time() - start_batch_time:.2f}s.")
-
-            except Exception as batch_processing_error:
-                logger.error(f"Error processing batch {current_batch_number}. Rolling back. Error: {batch_processing_error}", exc_info=True)
-                if conn: conn.rollback()
-                raise 
-
-        logger.info(f"✅ All {total_batches} batches processed successfully for file '{json_file_path}'.")
+        logger.info(f"✅ 모든 처리 완료 for file '{json_file_path}'")
 
     except Exception as main_error:
-        logger.error(f"Main processing loop failed for file '{json_file_path}': {main_error}", exc_info=True)
+        logger.error(f"❌ Main processing failed for file '{json_file_path}': {main_error}", exc_info=True)
         if conn:
-            try: conn.rollback()
-            except Exception as rollback_err: logger.error(f"Error during final rollback for '{json_file_path}': {rollback_err}", exc_info=True)
+            try: 
+                conn.rollback()
+            except Exception as rollback_err: 
+                logger.error(f"Error during final rollback for '{json_file_path}': {rollback_err}", exc_info=True)
         raise
     finally:
         if conn:
             conn.close()
-            logger.info(f"Database connection closed for file '{json_file_path}'.")
-        logger.info(f"Total execution time for load_json_to_db (file: '{json_file_path}'): {time.time() - start_total:.2f} seconds.")
+            logger.info(f"🔌 Database connection closed for file '{json_file_path}'")
+        total_time_sec = time.time() - start_total
+        logger.info(f"⏱️  Total execution time for '{json_file_path}': {total_time_sec:.2f}초")
 
 if __name__ == '__main__':
     logger.info("Running load_json_to_postgres.py directly for testing.")

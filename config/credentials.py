@@ -20,22 +20,38 @@ _drive_service = None
 
 def get_sheets_credentials():
     if os.getenv("RAILWAY_ENVIRONMENT"):
-        key_path = "config/gst-manegemnet-70faf8ce1bff.json"
+        # Railway 환경에서는 환경변수에서 JSON 내용 직접 로드
+        credentials_json = os.getenv("GOOGLE_SHEETS_CREDENTIALS_JSON")
+        if credentials_json:
+            import json
+            from google.oauth2.service_account import Credentials
+            credentials_info = json.loads(credentials_json)
+            return Credentials.from_service_account_info(credentials_info, scopes=SCOPES_SHEETS)
+        else:
+            # 환경변수가 없으면 기존 파일 방식 사용 (fallback)
+            key_path = "config/gst-manegemnet-70faf8ce1bff.json"
+            return _load_service_account(key_path, SCOPES_SHEETS)
     else:
-        key_path = os.getenv(
-            "SHEETS_JSON_KEY_PATH", "config/gst-manegemnet-70faf8ce1bff.json"
-        )
-    return _load_service_account(key_path, SCOPES_SHEETS)
+        key_path = os.getenv("SHEETS_JSON_KEY_PATH", "config/gst-manegemnet-70faf8ce1bff.json")
+        return _load_service_account(key_path, SCOPES_SHEETS)
 
 
 def get_drive_credentials():
     if os.getenv("RAILWAY_ENVIRONMENT"):
-        key_path = "config/gst-manegemnet-ab8788a05cff.json"
+        # Railway 환경에서는 환경변수에서 JSON 내용 직접 로드
+        credentials_json = os.getenv("GOOGLE_DRIVE_CREDENTIALS_JSON")
+        if credentials_json:
+            import json
+            from google.oauth2.service_account import Credentials
+            credentials_info = json.loads(credentials_json)
+            return Credentials.from_service_account_info(credentials_info, scopes=SCOPES_DRIVE)
+        else:
+            # 환경변수가 없으면 기존 파일 방식 사용 (fallback)
+            key_path = "config/gst-manegemnet-ab8788a05cff.json"
+            return _load_service_account(key_path, SCOPES_DRIVE)
     else:
-        key_path = os.getenv(
-            "DRIVE_JSON_KEY_PATH", "config/gst-manegemnet-ab8788a05cff.json"
-        )
-    return _load_service_account(key_path, SCOPES_DRIVE)
+        key_path = os.getenv("DRIVE_JSON_KEY_PATH", "config/gst-manegemnet-ab8788a05cff.json")
+        return _load_service_account(key_path, SCOPES_DRIVE)
 
 
 def get_sheets_service():
