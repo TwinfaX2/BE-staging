@@ -36,9 +36,10 @@ BATCH_SIZE = int(os.getenv('BATCH_SIZE', 10))
 if not TARGET_SPREADSHEET_ID:
     logger.critical("Environment variable SPREADSHEET_ID is not set. sheet_extractor initialization failed.")
     raise ValueError("Environment variable SPREADSHEET_ID is not set.")
+# TARGET_SHEET_NAME은 Drive 방식에서는 선택적
 if not TARGET_SHEET_NAME:
-    logger.critical("Environment variable TARGET_SHEET_NAME is not set. sheet_extractor initialization failed.")
-    raise ValueError("Environment variable TARGET_SHEET_NAME is not set.")
+    logger.warning("Environment variable TARGET_SHEET_NAME is not set. Using default sheet name if needed.")
+    TARGET_SHEET_NAME = "작업 진행 현황"  # 기본값 설정
 
 def extract_hyperlink(cell_value):
     """Extract hyperlink URL from cell."""
