@@ -47,7 +47,7 @@ jobs:
         EXTRACTION_BATCH_SIZE: ${{ secrets.EXTRACTION_BATCH_SIZE }}
         EXTRACTION_BATCH_DELAY: ${{ secrets.EXTRACTION_BATCH_DELAY }}
         LIMIT: ${{ github.event.inputs.limit || secrets.LIMIT }}
-        TOLERANCE: ${{ secrets.TOLERANCE }}
+        TOLERANCE: ${{ secrets.TOLERANCE || '0.1' }}
         RAILWAY_ENVIRONMENT: ${{ secrets.RAILWAY_ENVIRONMENT }}
       run: |
         echo "🚀 Starting BE-Staging Pipeline Test"
